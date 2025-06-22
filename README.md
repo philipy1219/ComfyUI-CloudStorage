@@ -148,7 +148,3 @@ Error messages are descriptive and include specific details to help troubleshoot
 ## Contributing
 
 Contributions are welcome! Please feel free to submit pull requests or create issues for bugs and feature requests.
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details. 
