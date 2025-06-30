@@ -15,25 +15,6 @@ import sys
 import copy
 import logging
 
-def cached(duration):
-    def dec(f):
-        cached_ret = None
-        cache_time = 0
-        def cached_func():
-            nonlocal cache_time, cached_ret
-            if time.time() > cache_time + duration or cached_ret is None:
-                cache_time = time.time()
-                cached_ret = f()
-            return cached_ret
-        return cached_func
-    return dec
-
-class ContainsAll(dict):
-    def __contains__(self, other):
-        return True
-    def __getitem__(self, key):
-        return super().get(key, (None, {}))
-
 class ColoredFormatter(logging.Formatter):
     COLORS = {
         "DEBUG": "\033[0;36m",  # CYAN
@@ -197,42 +178,6 @@ else:
             ffmpeg_path = ffmpeg_paths[0]
         else:
             ffmpeg_path = max(ffmpeg_paths, key=ffmpeg_suitability)
-gifski_path = os.environ.get("VHS_GIFSKI", None)
-if gifski_path is None:
-    gifski_path = os.environ.get("JOV_GIFSKI", None)
-    if gifski_path is None:
-        gifski_path = shutil.which("gifski")
-
-def tensor_to_int(tensor, bits):
-    #TODO: investigate benefit of rounding by adding 0.5 before clip/cast
-    tensor = tensor.cpu().numpy() * (2**bits-1)
-    return np.clip(tensor, 0, (2**bits-1))
-def tensor_to_shorts(tensor):
-    return tensor_to_int(tensor, 16).astype(np.uint16)
-def tensor_to_bytes(tensor):
-    return tensor_to_int(tensor, 8).astype(np.uint8)
-
-def merge_filter_args(args, ftype="-vf"):
-    #TODO This doesn't account for filter_complex
-    #Will likely need to convert all filters to filter complex in the future
-    #But that requires source/output deduplication
-    try:
-        start_index = args.index(ftype)+1
-        index = start_index
-        while True:
-            index = args.index(ftype, index)
-            args[start_index] += ',' + args[index+1]
-            args.pop(index)
-            args.pop(index)
-    except ValueError:
-        pass
-
-def to_pingpong(inp):
-    if not hasattr(inp, "__getitem__"):
-        inp = list(inp)
-    yield from inp
-    for i in range(len(inp)-2,0,-1):
-        yield inp[i]
 
 video_extensions = ['webm', 'mp4', 'mkv', 'gif', 'mov']
 
@@ -376,112 +321,6 @@ def cv_frame_generator(video, force_rate, frame_load_cap, skip_first_frames,
         # if cap exists and we've reached it, stop processing frames
         if frame_load_cap > 0 and frames_added >= frame_load_cap:
             break
-    if meta_batch is not None:
-        meta_batch.inputs.pop(unique_id)
-        meta_batch.has_closed_inputs = True
-    if prev_frame is not None:
-        yield prev_frame
-
-def ffmpeg_frame_generator(video, force_rate, frame_load_cap, start_time,
-                           custom_width, custom_height, downscale_ratio=8,
-                           meta_batch=None, unique_id=None):
-    args_dummy = [ffmpeg_path, "-i", video, '-c', 'copy', '-frames:v', '1', "-f", "null", "-"]
-    size_base = None
-    fps_base = None
-    try:
-        dummy_res = subprocess.run(args_dummy, stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.PIPE, check=True)
-    except subprocess.CalledProcessError as e:
-        raise Exception("An error occurred in the ffmpeg subprocess:\n" \
-                + e.stderr.decode(*ENCODE_ARGS))
-    lines = dummy_res.stderr.decode(*ENCODE_ARGS)
-
-    for line in lines.split('\n'):
-        match = re.search("^ *Stream .* Video.*, ([1-9]|\\d{2,})x(\\d+)", line)
-        if match is not None:
-            size_base = [int(match.group(1)), int(match.group(2))]
-            fps_match = re.search(", ([\\d\\.]+) fps", line)
-            if fps_match:
-                fps_base = float(fps_match.group(1))
-            else:
-                fps_base = 1
-            alpha = re.search("(yuva|rgba)", line) is not None
-            break
-    else:
-        raise Exception("Failed to parse video/image information. FFMPEG output:\n" + lines)
-
-    durs_match = re.search("Duration: (\\d+:\\d+:\\d+\\.\\d+),", lines)
-    if durs_match:
-        durs = durs_match.group(1).split(':')
-        duration = int(durs[0])*360 + int(durs[1])*60 + float(durs[2])
-    else:
-        duration = 0
-
-    if start_time > 0:
-        if start_time > 4:
-            post_seek = ['-ss', '4']
-            pre_seek = ['-ss', str(start_time - 4)]
-        else:
-            post_seek = ['-ss', str(start_time)]
-            pre_seek = []
-    else:
-        pre_seek = []
-        post_seek = []
-    args_all_frames = [ffmpeg_path, "-v", "error", "-an"] + pre_seek + \
-            ["-i", video, "-pix_fmt", "rgba64le"] + post_seek
-
-    vfilters = []
-    if force_rate != 0:
-        vfilters.append("fps=fps="+str(force_rate))
-    if custom_width != 0 or custom_height != 0:
-        size = target_size(size_base[0], size_base[1], custom_width,
-                           custom_height, downscale_ratio=downscale_ratio)
-        ar = float(size[0])/float(size[1])
-        if abs(size_base[0]*ar-size_base[1]) >= 1:
-            #Aspect ratio is changed. Crop to new aspect ratio before scale
-            vfilters.append(f"crop=if(gt({ar}\\,a)\\,iw\\,ih*{ar}):if(gt({ar}\\,a)\\,iw/{ar}\\,ih)")
-        size_arg = ':'.join(map(str,size))
-        vfilters.append(f"scale={size_arg}")
-    else:
-        size = size_base
-    if len(vfilters) > 0:
-        args_all_frames += ["-vf", ",".join(vfilters)]
-    yieldable_frames = (force_rate or fps_base)*duration
-    if frame_load_cap > 0:
-        args_all_frames += ["-frames:v", str(frame_load_cap)]
-        yieldable_frames = min(yieldable_frames, frame_load_cap)
-    yield (size_base[0], size_base[1], fps_base, duration, fps_base * duration,
-           1/(force_rate or fps_base), yieldable_frames, size[0], size[1], alpha)
-
-    args_all_frames += ["-f", "rawvideo", "-"]
-    pbar = ProgressBar(yieldable_frames)
-    try:
-        with subprocess.Popen(args_all_frames, stdout=subprocess.PIPE) as proc:
-            #Manually buffer enough bytes for an image
-            bpi = size[0] * size[1] * 8
-            current_bytes = bytearray(bpi)
-            current_offset=0
-            prev_frame = None
-            while True:
-                bytes_read = proc.stdout.read(bpi - current_offset)
-                if bytes_read is None:#sleep to wait for more data
-                    time.sleep(.1)
-                    continue
-                if len(bytes_read) == 0:#EOF
-                    break
-                current_bytes[current_offset:len(bytes_read)] = bytes_read
-                current_offset+=len(bytes_read)
-                if current_offset == bpi:
-                    if prev_frame is not None:
-                        yield prev_frame
-                        pbar.update(1)
-                    prev_frame = np.frombuffer(current_bytes, dtype=np.dtype(np.uint16).newbyteorder("<")).reshape(size[1], size[0], 4) / (2**16-1)
-                    if not alpha:
-                        prev_frame = prev_frame[:, :, :-1]
-                    current_offset = 0
-    except BrokenPipeError as e:
-        raise Exception("An error occured in the ffmpeg subprocess:\n" \
-                + proc.stderr.read().decode(*ENCODE_ARGS))
     if meta_batch is not None:
         meta_batch.inputs.pop(unique_id)
         meta_batch.has_closed_inputs = True
