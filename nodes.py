@@ -11,7 +11,7 @@ import torch
 from PIL import Image, ImageOps, ImageSequence
 from PIL.PngImagePlugin import PngInfo
 from datetime import datetime
-from utils import imageOrLatent, floatOrInt, BIGMAX, DIMMAX, get_load_formats, load_video
+from .utils import imageOrLatent, floatOrInt, BIGMAX, DIMMAX, get_load_formats, load_video
 from comfy.cli_args import args
 import os
 import json
@@ -146,7 +146,7 @@ class SaveImageToCloud:
             extra_pnginfo: Additional PNG metadata (optional)
         
         Returns:
-            tuple: Contains semicolon-separated list of image URLs
+            tuple: Contains JSON string of URLs and metadata
         """
         client = CloudStorageConfig.create_client(
             storage_type,
@@ -190,9 +190,14 @@ class SaveImageToCloud:
                 else:
                     url = f"https://{bucket}.s3.{region}.amazonaws.com/{filename}"
             
-            results.append(url)
+            results.append({
+                "url": url,
+                "filename": filename,
+                "timestamp": timestamp,
+                "storage_type": storage_type
+            })
         
-        return (";".join(results),)
+        return (json.dumps(results, ensure_ascii=False),)
 
 class LoadImageFromCloud:
     """
@@ -552,7 +557,7 @@ class UploadFileToCloud:
     FUNCTION = "upload_file"
     OUTPUT_NODE = True
     CATEGORY = "cloud_storage"
-    DESCRIPTION = "上传任意文件到云存储 (支持阿里云OSS和AWS S3)"
+    DESCRIPTION = "Upload file to cloud storage (supports Aliyun OSS and AWS S3)"
 
     def upload_file(self, file_path, storage_type, endpoint, bucket, prefix, region="us-east-1"):
         """
@@ -567,7 +572,7 @@ class UploadFileToCloud:
             region: S3区域 (可选)
         
         Returns:
-            tuple: 包含文件URL的元组
+            tuple: 包含JSON字符串的元组，包括URL和元数据
         """
         if not os.path.exists(file_path):
             raise ValueError(f"文件不存在: {file_path}")
@@ -597,7 +602,14 @@ class UploadFileToCloud:
                 else:
                     url = f"https://{bucket}.s3.{region}.amazonaws.com/{cloud_filename}"
             
-            return (url,)
+            result = [{
+                "url": url,
+                "filename": cloud_filename,
+                "timestamp": timestamp,
+                "storage_type": storage_type,
+            }]
+            
+            return (json.dumps(result, ensure_ascii=False),)
         except Exception as e:
             raise ValueError(f"上传文件失败: {str(e)}")
 
