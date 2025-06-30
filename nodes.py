@@ -616,10 +616,6 @@ class UploadFileToCloud:
     @classmethod
     def VALIDATE_INPUTS(s, file_path, storage_type, endpoint, bucket, prefix, region="us-east-1"):
         """验证输入参数"""
-        if not file_path:
-            return "文件路径不能为空"
-        if not os.path.exists(file_path):
-            return "文件不存在"
         if not endpoint or not bucket:
             return "存储配置不完整"
         return True
